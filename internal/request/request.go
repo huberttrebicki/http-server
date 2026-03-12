@@ -3,15 +3,17 @@ package request
 import (
 	"bytes"
 	"fmt"
+	"http-server/internal/headers"
 	"io"
 )
 
 type parserState string
 
 const (
-	StateInit  parserState = "initialized"
-	StateDone  parserState = "done"
-	StateError parserState = "error"
+	StateInit    parserState = "initialized"
+	StateHeaders parserState = "headers"
+	StateDone    parserState = "done"
+	StateError   parserState = "error"
 )
 
 type RequestLine struct {
@@ -22,12 +24,14 @@ type RequestLine struct {
 
 type Request struct {
 	RequestLine RequestLine
+	Headers     *headers.Headers
 	state       parserState
 }
 
 func newRequest() *Request {
 	return &Request{
-		state: StateInit,
+		state:   StateInit,
+		Headers: headers.NewHeaders(),
 	}
 }
 
@@ -68,11 +72,12 @@ func (r *Request) parse(data []byte) (int, error) {
 	read := 0
 outer:
 	for {
+		currentData := data[read:]
 		switch r.state {
 		case StateError:
 			return 0, REQUEST_IN_ERROR_STATE
 		case StateInit:
-			rl, n, err := parseRequestLine(data[read:])
+			rl, n, err := parseRequestLine(currentData)
 			if err != nil {
 				r.state = StateError
 				return 0, err
@@ -82,9 +87,26 @@ outer:
 			}
 			r.RequestLine = *rl
 			read += n
-			r.state = StateDone
+			r.state = StateHeaders
+		case StateHeaders:
+			n, done, err := r.Headers.Parse(currentData)
+			if err != nil {
+				return 0, err
+			}
+
+			if n == 0 {
+				break outer
+			}
+
+			read += n
+
+			if done {
+				r.state = StateDone
+			}
 		case StateDone:
 			break outer
+		default:
+			panic("No state match")
 		}
 	}
 	return read, nil
@@ -108,7 +130,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		}
 
 		bufLen += n
-		readN, err := request.parse(buf[:bufLen+n])
+		readN, err := request.parse(buf[:bufLen])
 		if err != nil {
 			return nil, err
 		}
